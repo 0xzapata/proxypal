@@ -1556,15 +1556,10 @@ export CODE_ASSIST_ENDPOINT="{}"
             let factory_dir = home.join(".factory");
             std::fs::create_dir_all(&factory_dir).map_err(|e| e.to_string())?;
             
-            // Write config.json with all supported models
+            // Write config.json with all CLIProxyAPI-supported models
+            // See: https://help.router-for.me/agent-client/droid.html
             let config_content = format!(r#"{{
   "custom_models": [
-    {{
-      "model": "gemini-2.5-pro",
-      "base_url": "{}/v1",
-      "api_key": "sk-proxypal",
-      "provider": "openai"
-    }},
     {{
       "model": "claude-sonnet-4-5-20250929",
       "base_url": "{}",
@@ -1573,6 +1568,12 @@ export CODE_ASSIST_ENDPOINT="{}"
     }},
     {{
       "model": "claude-opus-4-1-20250805",
+      "base_url": "{}",
+      "api_key": "sk-proxypal",
+      "provider": "anthropic"
+    }},
+    {{
+      "model": "claude-3-5-haiku-20241022",
       "base_url": "{}",
       "api_key": "sk-proxypal",
       "provider": "anthropic"
@@ -1590,13 +1591,49 @@ export CODE_ASSIST_ENDPOINT="{}"
       "provider": "openai"
     }},
     {{
+      "model": "o3",
+      "base_url": "{}/v1",
+      "api_key": "sk-proxypal",
+      "provider": "openai"
+    }},
+    {{
+      "model": "gemini-2.5-pro",
+      "base_url": "{}/v1",
+      "api_key": "sk-proxypal",
+      "provider": "openai"
+    }},
+    {{
+      "model": "gemini-2.5-flash",
+      "base_url": "{}/v1",
+      "api_key": "sk-proxypal",
+      "provider": "openai"
+    }},
+    {{
       "model": "qwen3-coder-plus",
+      "base_url": "{}/v1",
+      "api_key": "sk-proxypal",
+      "provider": "openai"
+    }},
+    {{
+      "model": "qwen-coder-plus",
+      "base_url": "{}/v1",
+      "api_key": "sk-proxypal",
+      "provider": "openai"
+    }},
+    {{
+      "model": "deepseek-r1",
+      "base_url": "{}/v1",
+      "api_key": "sk-proxypal",
+      "provider": "openai"
+    }},
+    {{
+      "model": "deepseek-v3",
       "base_url": "{}/v1",
       "api_key": "sk-proxypal",
       "provider": "openai"
     }}
   ]
-}}"#, endpoint, endpoint, endpoint, endpoint, endpoint, endpoint);
+}}"#, endpoint, endpoint, endpoint, endpoint, endpoint, endpoint, endpoint, endpoint, endpoint, endpoint, endpoint, endpoint);
             
             let config_path = factory_dir.join("config.json");
             std::fs::write(&config_path, &config_content).map_err(|e| e.to_string())?;
@@ -1644,6 +1681,7 @@ export AMP_URL="{}"
             let config_path = config_dir.join("opencode.json");
             
             // Create or update opencode.json with proxypal provider
+            // Use CLIProxyAPI-compatible model names
             let opencode_config = serde_json::json!({
                 "$schema": "https://opencode.ai/config.json",
                 "provider": {
@@ -1655,17 +1693,54 @@ export AMP_URL="{}"
                             "apiKey": "sk-proxypal"
                         },
                         "models": {
-                            "claude-3.5-sonnet": {
-                                "name": "Claude 3.5 Sonnet (via ProxyPal)"
+                            // Claude models (via CLIProxyAPI)
+                            "claude-sonnet-4-5-20250929": {
+                                "name": "Claude Sonnet 4.5",
+                                "limit": { "context": 200000, "output": 16384 }
                             },
-                            "claude-3.5-haiku": {
-                                "name": "Claude 3.5 Haiku (via ProxyPal)"
+                            "claude-opus-4-1-20250805": {
+                                "name": "Claude Opus 4.1",
+                                "limit": { "context": 200000, "output": 16384 }
                             },
-                            "gpt-4o": {
-                                "name": "GPT-4o (via ProxyPal)"
+                            "claude-3-5-haiku-20241022": {
+                                "name": "Claude 3.5 Haiku",
+                                "limit": { "context": 200000, "output": 8192 }
                             },
-                            "gemini-2.0-flash": {
-                                "name": "Gemini 2.0 Flash (via ProxyPal)"
+                            // GPT models (via CLIProxyAPI)
+                            "gpt-5": {
+                                "name": "GPT-5",
+                                "limit": { "context": 128000, "output": 32768 }
+                            },
+                            "gpt-5-codex": {
+                                "name": "GPT-5 Codex",
+                                "limit": { "context": 128000, "output": 32768 }
+                            },
+                            "o3": {
+                                "name": "OpenAI o3",
+                                "limit": { "context": 200000, "output": 100000 }
+                            },
+                            // Gemini models (via CLIProxyAPI)
+                            "gemini-2.5-pro": {
+                                "name": "Gemini 2.5 Pro",
+                                "limit": { "context": 1000000, "output": 65536 }
+                            },
+                            "gemini-2.5-flash": {
+                                "name": "Gemini 2.5 Flash",
+                                "limit": { "context": 1000000, "output": 65536 }
+                            },
+                            // Qwen models (via CLIProxyAPI)
+                            "qwen3-coder-plus": {
+                                "name": "Qwen3 Coder Plus",
+                                "limit": { "context": 131072, "output": 16384 }
+                            },
+                            // DeepSeek models (via CLIProxyAPI)
+                            "deepseek-r1": {
+                                "name": "DeepSeek R1",
+                                "limit": { "context": 64000, "output": 8192 }
+                            },
+                            "deepseek-v3": {
+                                "name": "DeepSeek V3",
+                                "limit": { "context": 64000, "output": 8192 }
                             }
                         }
                     }
@@ -1702,7 +1777,7 @@ export AMP_URL="{}"
                 "success": true,
                 "configType": "config",
                 "configPath": config_path.to_string_lossy(),
-                "instructions": "ProxyPal provider added to OpenCode. Run 'opencode' and use /models to select a ProxyPal model (e.g., proxypal/claude-3.5-sonnet)."
+                "instructions": "ProxyPal provider added to OpenCode. Run 'opencode' and use /models to select a model (e.g., proxypal/claude-sonnet-4-5-20250929). OpenCode uses AI SDK (ai-sdk.dev) and models.dev registry."
             }))
         },
         
