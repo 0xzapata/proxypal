@@ -6,6 +6,7 @@ import {
   ApiKeysPage,
   AuthFilesPage,
   LogViewerPage,
+  AnalyticsPage,
 } from "./pages";
 import { ToastContainer } from "./components/ui";
 import { CommandPalette } from "./components/CommandPalette";
@@ -53,6 +54,9 @@ function App() {
           </Match>
           <Match when={currentPage() === "logs"}>
             <LogViewerPage />
+          </Match>
+          <Match when={currentPage() === "analytics"}>
+            <AnalyticsPage />
           </Match>
         </Switch>
       </Show>

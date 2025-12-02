@@ -145,6 +145,22 @@ pub struct UsageStats {
     pub tokens_today: u64,
     #[serde(default)]
     pub models: Vec<ModelUsage>,
+    /// Time-series data for charts
+    #[serde(default)]
+    pub requests_by_day: Vec<TimeSeriesPoint>,
+    #[serde(default)]
+    pub tokens_by_day: Vec<TimeSeriesPoint>,
+    #[serde(default)]
+    pub requests_by_hour: Vec<TimeSeriesPoint>,
+    #[serde(default)]
+    pub tokens_by_hour: Vec<TimeSeriesPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimeSeriesPoint {
+    pub label: String,
+    pub value: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -671,6 +687,64 @@ async fn get_usage_stats(state: State<'_, AppState>) -> Result<UsageStats, Strin
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     
+    // Parse time-series data for charts
+    let mut requests_by_day: Vec<TimeSeriesPoint> = Vec::new();
+    let mut tokens_by_day: Vec<TimeSeriesPoint> = Vec::new();
+    let mut requests_by_hour: Vec<TimeSeriesPoint> = Vec::new();
+    let mut tokens_by_hour: Vec<TimeSeriesPoint> = Vec::new();
+    
+    // Parse requests_by_day
+    if let Some(by_day) = usage.get("requests_by_day").and_then(|v| v.as_object()) {
+        let mut entries: Vec<_> = by_day.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0)); // Sort by date
+        for (date, value) in entries.iter().rev().take(14) { // Last 14 days
+            requests_by_day.push(TimeSeriesPoint {
+                label: date.to_string(),
+                value: value.as_u64().unwrap_or(0),
+            });
+        }
+        requests_by_day.reverse(); // Oldest first
+    }
+    
+    // Parse tokens_by_day
+    if let Some(by_day) = usage.get("tokens_by_day").and_then(|v| v.as_object()) {
+        let mut entries: Vec<_> = by_day.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (date, value) in entries.iter().rev().take(14) {
+            tokens_by_day.push(TimeSeriesPoint {
+                label: date.to_string(),
+                value: value.as_u64().unwrap_or(0),
+            });
+        }
+        tokens_by_day.reverse();
+    }
+    
+    // Parse requests_by_hour (last 24 hours)
+    if let Some(by_hour) = usage.get("requests_by_hour").and_then(|v| v.as_object()) {
+        let mut entries: Vec<_> = by_hour.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (hour, value) in entries.iter().rev().take(24) {
+            requests_by_hour.push(TimeSeriesPoint {
+                label: hour.to_string(),
+                value: value.as_u64().unwrap_or(0),
+            });
+        }
+        requests_by_hour.reverse();
+    }
+    
+    // Parse tokens_by_hour
+    if let Some(by_hour) = usage.get("tokens_by_hour").and_then(|v| v.as_object()) {
+        let mut entries: Vec<_> = by_hour.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (hour, value) in entries.iter().rev().take(24) {
+            tokens_by_hour.push(TimeSeriesPoint {
+                label: hour.to_string(),
+                value: value.as_u64().unwrap_or(0),
+            });
+        }
+        tokens_by_hour.reverse();
+    }
+    
     // Parse model usage from apis section
     let mut models: Vec<ModelUsage> = Vec::new();
     let mut input_tokens: u64 = 0;
@@ -722,6 +796,10 @@ async fn get_usage_stats(state: State<'_, AppState>) -> Result<UsageStats, Strin
         requests_today,
         tokens_today,
         models,
+        requests_by_day,
+        tokens_by_day,
+        requests_by_hour,
+        tokens_by_hour,
     })
 }
 

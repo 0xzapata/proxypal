@@ -280,6 +280,11 @@ export async function appendToShellProfile(content: string): Promise<string> {
 }
 
 // Usage Statistics
+export interface TimeSeriesPoint {
+  label: string;
+  value: number;
+}
+
 export interface ModelUsage {
   model: string;
   requests: number;
@@ -296,6 +301,10 @@ export interface UsageStats {
   requestsToday: number;
   tokensToday: number;
   models: ModelUsage[];
+  requestsByDay: TimeSeriesPoint[];
+  tokensByDay: TimeSeriesPoint[];
+  requestsByHour: TimeSeriesPoint[];
+  tokensByHour: TimeSeriesPoint[];
 }
 
 export async function getUsageStats(): Promise<UsageStats> {
