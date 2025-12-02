@@ -263,113 +263,6 @@ fn save_auth_to_file(auth: &AuthStatus) -> Result<(), String> {
     std::fs::write(path, data).map_err(|e| e.to_string())
 }
 
-// Parse CLIProxyAPI log output to extract request information
-// CLIProxyAPI uses GIN framework log format:
-// [GIN] 2025/12/02 - 14:30:57 | 200 | 1.5s | ::1 | POST "/v1/chat/completions"
-// With debug mode, additional lines show model info:
-// [info] [router.go:XX] Routing to gemini model=gemini-2.5-flash
-// [info] [router.go:XX] Response model=gemini-2.5-flash tokens=1234
-fn parse_request_log(line: &str, counter: &mut u64, last_model: &mut Option<String>, last_provider: &mut Option<String>) -> Option<RequestLog> {
-    let line_trimmed = line.trim();
-    
-    // Check for model/provider info in debug logs (capture for next GIN log)
-    // Patterns: "model=xxx", "Routing to xxx", "provider=xxx"
-    if line_trimmed.contains("model=") {
-        if let Some(model) = extract_key_value(line_trimmed, "model") {
-            *last_model = Some(model.clone());
-            // Detect provider from model name
-            *last_provider = Some(detect_provider_from_model(&model));
-        }
-    }
-    if line_trimmed.contains("Routing to") {
-        // Format: "Routing to gemini" or "Routing to openai"
-        let providers = ["gemini", "openai", "anthropic", "claude", "qwen", "deepseek", "vertex", "iflow"];
-        for p in providers {
-            if line_trimmed.to_lowercase().contains(&format!("routing to {}", p)) {
-                *last_provider = Some(p.to_string());
-                break;
-            }
-        }
-    }
-    
-    // Must be a GIN log line with an API path we care about
-    if !line_trimmed.contains("[GIN]") {
-        return None;
-    }
-    
-    // Only track actual AI API calls, not health checks or management endpoints
-    let is_chat = line_trimmed.contains("/v1/chat/completions");
-    let is_messages = line_trimmed.contains("/v1/messages");
-    let is_completions = line_trimmed.contains("/v1/completions") && !is_chat;
-    
-    if !is_chat && !is_messages && !is_completions {
-        return None;
-    }
-    
-    // Extract HTTP method from the log
-    let method = if line_trimmed.contains(" POST ") || line_trimmed.contains("POST \"") {
-        "POST"
-    } else if line_trimmed.contains(" GET ") || line_trimmed.contains("GET \"") {
-        "GET"
-    } else {
-        "POST" // Default for chat completions
-    };
-    
-    // Extract path
-    let path = if is_chat {
-        "/v1/chat/completions"
-    } else if is_messages {
-        "/v1/messages"
-    } else {
-        "/v1/completions"
-    };
-    
-    // Extract status code from GIN format: "| 200 |"
-    let status = extract_status_code(line_trimmed).unwrap_or(200);
-    
-    // Extract duration from GIN format: "| 1.5s |" or "| 150ms |"
-    let duration_ms = extract_duration(line_trimmed).unwrap_or(0);
-    
-    // Use captured model/provider from previous debug lines, then reset
-    let model = last_model.take().unwrap_or_else(|| "unknown".to_string());
-    let provider = last_provider.take().unwrap_or_else(|| detect_provider_from_model(&model));
-    
-    *counter += 1;
-    
-    Some(RequestLog {
-        id: format!("req_{}", counter),
-        timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64,
-        provider,
-        model,
-        method: method.to_string(),
-        path: path.to_string(),
-        status,
-        duration_ms,
-        tokens_in: None,
-        tokens_out: None,
-    })
-}
-
-// Extract value from "key=value" pattern
-fn extract_key_value(line: &str, key: &str) -> Option<String> {
-    let pattern = format!("{}=", key);
-    if let Some(start) = line.find(&pattern) {
-        let value_start = start + pattern.len();
-        let rest = &line[value_start..];
-        // Value ends at whitespace, comma, or end of line
-        let value_end = rest.find(|c: char| c.is_whitespace() || c == ',' || c == '}' || c == ']')
-            .unwrap_or(rest.len());
-        let value = rest[..value_end].trim_matches('"').to_string();
-        if !value.is_empty() {
-            return Some(value);
-        }
-    }
-    None
-}
-
 // Detect provider from model name
 fn detect_provider_from_model(model: &str) -> String {
     let model_lower = model.to_lowercase();
@@ -393,42 +286,6 @@ fn detect_provider_from_model(model: &str) -> String {
     }
     
     "unknown".to_string()
-}
-
-// Helper to extract HTTP status code from GIN log line
-// Format: "| 200 |"
-fn extract_status_code(line: &str) -> Option<u16> {
-    // GIN format uses pipes: "| 200 |"
-    for part in line.split('|') {
-        let trimmed = part.trim();
-        if let Ok(code) = trimmed.parse::<u16>() {
-            if (100..600).contains(&code) {
-                return Some(code);
-            }
-        }
-    }
-    None
-}
-
-// Helper to extract duration from GIN log line
-// Format: "| 1.5s |" or "| 150ms |" or "| 0s |"
-fn extract_duration(line: &str) -> Option<u64> {
-    for part in line.split('|') {
-        let trimmed = part.trim();
-        // Check for milliseconds first
-        if trimmed.ends_with("ms") {
-            if let Ok(ms) = trimmed.trim_end_matches("ms").parse::<u64>() {
-                return Some(ms);
-            }
-        }
-        // Check for seconds (including "0s")
-        if trimmed.ends_with('s') && !trimmed.ends_with("ms") {
-            if let Ok(secs) = trimmed.trim_end_matches('s').parse::<f64>() {
-                return Some((secs * 1000.0) as u64);
-            }
-        }
-    }
-    None
 }
 
 // Tauri commands
@@ -460,25 +317,16 @@ async fn start_proxy(
     
     let proxy_config_path = config_dir.join("proxy-config.yaml");
     
-    // Check if config exists and has correct port
-    // Don't overwrite if it exists (CLIProxyAPI modifies secret-key in place)
-    let should_write_config = if proxy_config_path.exists() {
-        // Only rewrite if port changed
-        let existing = std::fs::read_to_string(&proxy_config_path).unwrap_or_default();
-        !existing.contains(&format!("port: {}", config.port))
-    } else {
-        true
-    };
-    
-    if should_write_config {
-        // Generate a simple config for CLIProxyAPI with Management API enabled
-        let proxy_config = format!(
-            r#"# ProxyPal generated config
+    // Always regenerate config on start because CLIProxyAPI hashes the secret-key in place
+    // and we need the plaintext key for Management API access
+    let proxy_config = format!(
+        r#"# ProxyPal generated config
 port: {}
 auth-dir: "~/.cli-proxy-api"
 api-keys:
   - "proxypal-local"
 debug: true
+usage-statistics-enabled: true
 
 # Enable Management API for OAuth flows
 remote-management:
@@ -486,11 +334,10 @@ remote-management:
   secret-key: "proxypal-mgmt-key"
   disable-control-panel: true
 "#,
-            config.port
-        );
-        
-        std::fs::write(&proxy_config_path, proxy_config).map_err(|e| e.to_string())?;
-    }
+        config.port
+    );
+    
+    std::fs::write(&proxy_config_path, proxy_config).map_err(|e| e.to_string())?;
 
     // Spawn the sidecar process
     let sidecar = app
@@ -507,25 +354,16 @@ remote-management:
         *process = Some(child);
     }
 
-    // Listen for stdout/stderr in a separate task
+    // Listen for stdout/stderr in a separate task (for logging only)
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         use tauri_plugin_shell::process::CommandEvent;
-        let mut request_counter: u64 = 0;
-        // Track model/provider from debug lines for next GIN log
-        let mut last_model: Option<String> = None;
-        let mut last_provider: Option<String> = None;
         
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
                     let text = String::from_utf8_lossy(&line);
                     println!("[CLIProxyAPI] {}", text);
-                    
-                    // Try to parse request logs from CLIProxyAPI output
-                    if let Some(log) = parse_request_log(&text, &mut request_counter, &mut last_model, &mut last_provider) {
-                        let _ = app_handle.emit("request-log", log);
-                    }
                 }
                 CommandEvent::Stderr(line) => {
                     let text = String::from_utf8_lossy(&line);
@@ -548,6 +386,122 @@ remote-management:
 
     // Give it a moment to start
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    
+    // Enable usage statistics via Management API
+    let port = config.port;
+    let enable_url = format!("http://127.0.0.1:{}/v0/management/usage-statistics-enabled", port);
+    let client = reqwest::Client::new();
+    let _ = client
+        .put(&enable_url)
+        .header("X-Management-Key", "proxypal-mgmt-key")
+        .json(&serde_json::json!({"value": true}))
+        .send()
+        .await;
+    
+    // Start background task to poll Management API for request details
+    let app_handle2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let client = reqwest::Client::new();
+        let mut request_counter: u64 = 0;
+        // Track seen timestamps per model to avoid duplicates
+        let mut seen_timestamps: std::collections::HashSet<String> = std::collections::HashSet::new();
+        
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            
+            // Check if still running
+            if let Some(state) = app_handle2.try_state::<AppState>() {
+                let running = state.proxy_status.lock().unwrap().running;
+                if !running {
+                    break;
+                }
+            } else {
+                break;
+            }
+            
+            // Fetch usage stats from Management API
+            let url = format!("http://127.0.0.1:{}/v0/management/usage", port);
+            if let Ok(response) = client
+                .get(&url)
+                .header("X-Management-Key", "proxypal-mgmt-key")
+                .timeout(std::time::Duration::from_secs(3))
+                .send()
+                .await
+            {
+                if let Ok(json) = response.json::<serde_json::Value>().await {
+                    if let Some(usage) = json.get("usage") {
+                        // Parse and emit request events from the apis.models.details
+                        if let Some(apis) = usage.get("apis").and_then(|v| v.as_object()) {
+                            for (_api_key, api_data) in apis {
+                                if let Some(models) = api_data.get("models").and_then(|v| v.as_object()) {
+                                    for (model_name, model_data) in models {
+                                        if let Some(details) = model_data.get("details").and_then(|v| v.as_array()) {
+                                            for detail in details.iter() {
+                                                // Use timestamp as unique key to deduplicate
+                                                let ts_str = detail.get("timestamp")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                
+                                                // Create a unique key combining model + timestamp
+                                                let unique_key = format!("{}:{}", model_name, ts_str);
+                                                
+                                                // Skip if we've already seen this request
+                                                if seen_timestamps.contains(&unique_key) {
+                                                    continue;
+                                                }
+                                                seen_timestamps.insert(unique_key);
+                                                
+                                                request_counter += 1;
+                                                
+                                                let timestamp = chrono::DateTime::parse_from_rfc3339(ts_str)
+                                                    .map(|dt| dt.timestamp_millis() as u64)
+                                                    .unwrap_or_else(|_| std::time::SystemTime::now()
+                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                        .unwrap()
+                                                        .as_millis() as u64);
+                                                
+                                                let tokens = detail.get("tokens");
+                                                let input_tokens = tokens
+                                                    .and_then(|t| t.get("input_tokens"))
+                                                    .and_then(|v| v.as_u64())
+                                                    .map(|v| v as u32);
+                                                let output_tokens = tokens
+                                                    .and_then(|t| t.get("output_tokens"))
+                                                    .and_then(|v| v.as_u64())
+                                                    .map(|v| v as u32);
+                                                
+                                                let failed = detail.get("failed")
+                                                    .and_then(|v| v.as_bool())
+                                                    .unwrap_or(false);
+                                                
+                                                // Detect provider from model name
+                                                let provider = detect_provider_from_model(model_name);
+                                                
+                                                let log = RequestLog {
+                                                    id: format!("req_{}", request_counter),
+                                                    timestamp,
+                                                    provider,
+                                                    model: model_name.clone(),
+                                                    method: "POST".to_string(),
+                                                    path: "/v1/chat/completions".to_string(),
+                                                    status: if failed { 500 } else { 200 },
+                                                    duration_ms: 0, // Not available from usage API
+                                                    tokens_in: input_tokens,
+                                                    tokens_out: output_tokens,
+                                                };
+                                                
+                                                let _ = app_handle2.emit("request-log", log);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
 
     // Update status
     let new_status = {

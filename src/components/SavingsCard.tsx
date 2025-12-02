@@ -1,7 +1,6 @@
 import { createSignal, onMount, onCleanup, Show } from "solid-js";
 import {
   getRequestHistory,
-  addRequestToHistory,
   onRequestLog,
   type RequestHistory,
 } from "../lib/tauri";
@@ -98,14 +97,15 @@ export function SavingsCard() {
       console.error("Failed to load request history:", err);
     }
 
-    // Listen for new requests to update totals
+    // Listen for new requests to update totals (read only - RequestMonitor handles persistence)
     const unlisten = await onRequestLog(async (log) => {
-      try {
-        const updatedHistory = await addRequestToHistory(log);
-        setHistory(updatedHistory);
-      } catch (err) {
-        // Ignore errors, RequestMonitor handles persistence
-      }
+      // Just update local state, don't save to history (RequestMonitor does that)
+      setHistory((prev) => ({
+        ...prev,
+        requests: [...prev.requests, log].slice(-100),
+        totalTokensIn: prev.totalTokensIn + (log.tokensIn || 0),
+        totalTokensOut: prev.totalTokensOut + (log.tokensOut || 0),
+      }));
     });
 
     onCleanup(() => {

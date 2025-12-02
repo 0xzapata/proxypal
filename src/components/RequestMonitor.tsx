@@ -394,15 +394,11 @@ export function RequestMonitorCompact() {
     }
 
     const unlisten = await onRequestLog(async (log) => {
-      try {
-        const updatedHistory = await addRequestToHistory(log);
-        setHistory(updatedHistory);
-      } catch (err) {
-        setHistory((prev) => ({
-          ...prev,
-          requests: [...prev.requests, log].slice(-100),
-        }));
-      }
+      // Just update local state, don't save to history (main RequestMonitor does that)
+      setHistory((prev) => ({
+        ...prev,
+        requests: [...prev.requests, log].slice(-100),
+      }));
     });
 
     onCleanup(() => {
