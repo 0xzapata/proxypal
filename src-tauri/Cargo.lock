@@ -3097,11 +3097,13 @@ dependencies = [
 
 [[package]]
 name = "proxypal"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
+ "lazy_static",
  "rand 0.8.5",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

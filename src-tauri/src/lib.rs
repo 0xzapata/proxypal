@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -8,6 +10,8 @@ use tauri::{
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
+use regex::Regex;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
 // Proxy status structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,6 +288,8 @@ pub struct AppState {
     pub proxy_process: Mutex<Option<CommandChild>>,
     pub copilot_status: Mutex<CopilotStatus>,
     pub copilot_process: Mutex<Option<CommandChild>>,
+    pub log_watcher_running: Arc<AtomicBool>,
+    pub request_counter: Arc<AtomicU64>,
 }
 
 impl Default for AppState {
@@ -296,6 +302,8 @@ impl Default for AppState {
             proxy_process: Mutex::new(None),
             copilot_status: Mutex::new(CopilotStatus::default()),
             copilot_process: Mutex::new(None),
+            log_watcher_running: Arc::new(AtomicBool::new(false)),
+            request_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -348,13 +356,13 @@ fn load_request_history() -> RequestHistory {
     RequestHistory::default()
 }
 
-// Save request history to file (keep last 100 requests)
+// Save request history to file (keep last 500 requests)
 fn save_request_history(history: &RequestHistory) -> Result<(), String> {
     let path = get_history_path();
     let mut trimmed = history.clone();
-    // Keep only last 100 requests
-    if trimmed.requests.len() > 100 {
-        trimmed.requests = trimmed.requests.split_off(trimmed.requests.len() - 100);
+    // Keep only last 500 requests
+    if trimmed.requests.len() > 500 {
+        trimmed.requests = trimmed.requests.split_off(trimmed.requests.len() - 500);
     }
     let data = serde_json::to_string_pretty(&trimmed).map_err(|e| e.to_string())?;
     std::fs::write(path, data).map_err(|e| e.to_string())
@@ -445,6 +453,258 @@ fn detect_provider_from_model(model: &str) -> String {
     }
     
     "unknown".to_string()
+}
+
+// Extract provider from Amp-style API path
+// e.g., "/api/provider/anthropic/v1/messages" -> "claude"
+// e.g., "/api/provider/openai/v1/chat/completions" -> "openai"
+// Also handles standard paths: /v1/messages -> claude, /v1/chat/completions -> openai-compat
+fn detect_provider_from_path(path: &str) -> Option<String> {
+    // First try Amp-style path
+    if path.contains("/api/provider/") {
+        let parts: Vec<&str> = path.split('/').collect();
+        // Path format: /api/provider/{provider}/...
+        if let Some(idx) = parts.iter().position(|&p| p == "provider") {
+            if let Some(provider) = parts.get(idx + 1) {
+                return Some(match *provider {
+                    "anthropic" => "claude".to_string(),
+                    "openai" => "openai".to_string(),
+                    "google" => "gemini".to_string(),
+                    p => p.to_string(),
+                });
+            }
+        }
+    }
+    
+    // Fallback: infer from standard endpoint paths
+    if path.contains("/v1/messages") || path.contains("/messages") {
+        return Some("claude".to_string());
+    }
+    if path.contains("/v1/chat/completions") || path.contains("/chat/completions") {
+        // Could be OpenAI, Gemini, etc. - mark as openai-compat
+        return Some("openai-compat".to_string());
+    }
+    if path.contains("/v1beta") || path.contains(":generateContent") || path.contains(":streamGenerateContent") {
+        return Some("gemini".to_string());
+    }
+    
+    None
+}
+
+// Extract model from Amp-style API path for Gemini
+// e.g., "/api/provider/google/v1beta1/publishers/google/models/gemini-2.5-pro:streamGenerateContent"
+fn extract_model_from_gemini_path(path: &str) -> Option<String> {
+    if path.contains("/models/") {
+        if let Some(idx) = path.find("/models/") {
+            let model_part = &path[idx + 8..]; // Skip "/models/"
+            // Model may end with :action (e.g., ":generateContent")
+            let model = if let Some(colon_idx) = model_part.find(':') {
+                &model_part[..colon_idx]
+            } else if let Some(slash_idx) = model_part.find('/') {
+                &model_part[..slash_idx]
+            } else {
+                model_part
+            };
+            if !model.is_empty() {
+                return Some(model.to_string());
+            }
+        }
+    }
+    None
+}
+
+// Parse a GIN log line and extract request information
+// Format: [GIN] 2025/12/04 - 20:51:48 | 200 | 6.656s | ::1 | POST "/api/provider/anthropic/v1/messages"
+fn parse_gin_log_line(line: &str, request_counter: &AtomicU64) -> Option<RequestLog> {
+    // Only process GIN request logs
+    if !line.contains("[GIN]") {
+        return None;
+    }
+    
+    // Skip management/internal routes we don't want to track
+    if line.contains("/v0/management/") || 
+       line.contains("/v1/models") ||
+       line.contains("?uploadThread") ||
+       line.contains("?getCreditsByRequestId") ||
+       line.contains("?threadDisplayCostInfo") ||
+       line.contains("/api/internal") ||
+       line.contains("/api/telemetry") ||
+       line.contains("/api/otel") {
+        return None;
+    }
+    
+    // Only track actual API calls (chat completions, messages, etc.)
+    let is_trackable = line.contains("/chat/completions") || 
+                       line.contains("/v1/messages") ||
+                       line.contains("/completions") ||
+                       line.contains("/v1beta") ||
+                       line.contains(":generateContent") ||
+                       line.contains(":streamGenerateContent");
+    
+    if !is_trackable {
+        return None;
+    }
+    
+    // Parse the GIN log format using regex
+    // Example: [GIN] 2025/12/04 - 20:51:48 | 200 | 6.656s | ::1 | POST "/api/provider/anthropic/v1/messages"
+    lazy_static::lazy_static! {
+        static ref GIN_REGEX: Regex = Regex::new(
+            r#"\[GIN\]\s+(\d{4}/\d{2}/\d{2})\s+-\s+(\d{2}:\d{2}:\d{2})\s+\|\s+(\d+)\s+\|\s+([^\s]+)\s+\|\s+[^\s]+\s+\|\s+(\w+)\s+"([^"]+)""#
+        ).unwrap();
+    }
+    
+    let captures = GIN_REGEX.captures(line)?;
+    
+    let date_str = captures.get(1)?.as_str(); // 2025/12/04
+    let time_str = captures.get(2)?.as_str(); // 20:51:48
+    let status: u16 = captures.get(3)?.as_str().parse().ok()?;
+    let duration_str = captures.get(4)?.as_str(); // 6.656s or 65ms
+    let method = captures.get(5)?.as_str().to_string();
+    let path = captures.get(6)?.as_str().to_string();
+    
+    // Parse timestamp
+    let datetime_str = format!("{} {}", date_str.replace('/', "-"), time_str);
+    let timestamp = chrono::NaiveDateTime::parse_from_str(&datetime_str, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|dt| dt.and_local_timezone(chrono::Local).unwrap().timestamp_millis() as u64)
+        .unwrap_or_else(|| std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64);
+    
+    // Parse duration to milliseconds
+    let duration_ms: u64 = if duration_str.ends_with("ms") {
+        duration_str.trim_end_matches("ms").parse().unwrap_or(0)
+    } else if duration_str.ends_with('s') {
+        let secs: f64 = duration_str.trim_end_matches('s').parse().unwrap_or(0.0);
+        (secs * 1000.0) as u64
+    } else {
+        0
+    };
+    
+    // Extract model from path for Gemini, otherwise use placeholder
+    // Note: For non-Gemini requests, model is in the request body which we can't access from logs
+    let model = extract_model_from_gemini_path(&path)
+        .unwrap_or_else(|| "api-request".to_string());
+    
+    // Determine provider from path first, then fallback to model-based detection
+    let provider = detect_provider_from_path(&path)
+        .unwrap_or_else(|| detect_provider_from_model(&model));
+    
+    let id = request_counter.fetch_add(1, Ordering::SeqCst);
+    
+    Some(RequestLog {
+        id: format!("log_{}", id),
+        timestamp,
+        provider,
+        model,
+        method,
+        path,
+        status,
+        duration_ms,
+        tokens_in: None,  // Not available from GIN logs
+        tokens_out: None, // Not available from GIN logs
+    })
+}
+
+// Start watching the proxy log file for new entries
+fn start_log_watcher(
+    app_handle: tauri::AppHandle,
+    log_path: std::path::PathBuf,
+    running: Arc<AtomicBool>,
+    request_counter: Arc<AtomicU64>,
+) {
+    std::thread::spawn(move || {
+        // Wait for log file to exist
+        let mut attempts = 0;
+        while !log_path.exists() && attempts < 30 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            attempts += 1;
+        }
+        
+        if !log_path.exists() {
+            eprintln!("[LogWatcher] Log file not found: {:?}", log_path);
+            return;
+        }
+        
+        // Open file and seek to end (only watch new entries)
+        let file = match std::fs::File::open(&log_path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[LogWatcher] Failed to open log file: {}", e);
+                return;
+            }
+        };
+        
+        let mut reader = BufReader::new(file);
+        // Seek to end to only process new lines
+        if let Err(e) = reader.seek(SeekFrom::End(0)) {
+            eprintln!("[LogWatcher] Failed to seek to end: {}", e);
+            return;
+        }
+        
+        // Track file position
+        let mut last_pos = reader.stream_position().unwrap_or(0);
+        
+        println!("[LogWatcher] Started watching: {:?}", log_path);
+        
+        // Poll for new content (more reliable than notify for log files)
+        while running.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            
+            // Check if file has grown
+            let current_size = std::fs::metadata(&log_path)
+                .map(|m| m.len())
+                .unwrap_or(last_pos);
+            
+            if current_size <= last_pos {
+                // File might have been rotated, reset
+                if current_size < last_pos {
+                    last_pos = 0;
+                    if let Err(e) = reader.seek(SeekFrom::Start(0)) {
+                        eprintln!("[LogWatcher] Failed to seek after rotation: {}", e);
+                        continue;
+                    }
+                }
+                continue;
+            }
+            
+            // Read new lines
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                if let Some(request_log) = parse_gin_log_line(&line, &request_counter) {
+                    // Emit to frontend for live display
+                    let _ = app_handle.emit("request-log", request_log.clone());
+                    
+                    // Persist to history (without token data for now)
+                    let mut history = load_request_history();
+                    
+                    // Check for duplicate by timestamp and path
+                    let is_duplicate = history.requests.iter().any(|r| 
+                        r.timestamp == request_log.timestamp && r.path == request_log.path
+                    );
+                    
+                    if !is_duplicate {
+                        history.requests.push(request_log);
+                        
+                        // Keep only last 500 requests
+                        if history.requests.len() > 500 {
+                            history.requests = history.requests.split_off(history.requests.len() - 500);
+                        }
+                        
+                        if let Err(e) = save_request_history(&history) {
+                            eprintln!("[LogWatcher] Failed to save history: {}", e);
+                        }
+                    }
+                }
+                line.clear();
+            }
+            
+            last_pos = reader.stream_position().unwrap_or(last_pos);
+        }
+        
+        println!("[LogWatcher] Stopped watching");
+    });
 }
 
 // Tauri commands
@@ -757,110 +1017,19 @@ ampcode:
         .send()
         .await;
     
-    // Start background task to poll Management API for request details
+    // Start log file watcher for request tracking
+    // This replaces the old polling approach and captures ALL requests including Amp proxy forwarding
+    let log_path = config_dir.join("logs").join("main.log");
+    let log_watcher_running = state.log_watcher_running.clone();
+    let request_counter = state.request_counter.clone();
+    
+    // Signal any existing watcher to stop, then start new one
+    log_watcher_running.store(false, Ordering::SeqCst);
+    std::thread::sleep(std::time::Duration::from_millis(100)); // Give old watcher time to stop
+    log_watcher_running.store(true, Ordering::SeqCst);
+    
     let app_handle2 = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let client = reqwest::Client::new();
-        let mut request_counter: u64 = 0;
-        // Track seen timestamps per model to avoid duplicates
-        let mut seen_timestamps: std::collections::HashSet<String> = std::collections::HashSet::new();
-        
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            
-            // Check if still running
-            if let Some(state) = app_handle2.try_state::<AppState>() {
-                let running = state.proxy_status.lock().unwrap().running;
-                if !running {
-                    break;
-                }
-            } else {
-                break;
-            }
-            
-            // Fetch usage stats from Management API
-            let url = format!("http://127.0.0.1:{}/v0/management/usage", port);
-            if let Ok(response) = client
-                .get(&url)
-                .header("X-Management-Key", "proxypal-mgmt-key")
-                .timeout(std::time::Duration::from_secs(3))
-                .send()
-                .await
-            {
-                if let Ok(json) = response.json::<serde_json::Value>().await {
-                    if let Some(usage) = json.get("usage") {
-                        // Parse and emit request events from the apis.models.details
-                        if let Some(apis) = usage.get("apis").and_then(|v| v.as_object()) {
-                            for (_api_key, api_data) in apis {
-                                if let Some(models) = api_data.get("models").and_then(|v| v.as_object()) {
-                                    for (model_name, model_data) in models {
-                                        if let Some(details) = model_data.get("details").and_then(|v| v.as_array()) {
-                                            for detail in details.iter() {
-                                                // Use timestamp as unique key to deduplicate
-                                                let ts_str = detail.get("timestamp")
-                                                    .and_then(|v| v.as_str())
-                                                    .unwrap_or("");
-                                                
-                                                // Create a unique key combining model + timestamp
-                                                let unique_key = format!("{}:{}", model_name, ts_str);
-                                                
-                                                // Skip if we've already seen this request
-                                                if seen_timestamps.contains(&unique_key) {
-                                                    continue;
-                                                }
-                                                seen_timestamps.insert(unique_key);
-                                                
-                                                request_counter += 1;
-                                                
-                                                let timestamp = chrono::DateTime::parse_from_rfc3339(ts_str)
-                                                    .map(|dt| dt.timestamp_millis() as u64)
-                                                    .unwrap_or_else(|_| std::time::SystemTime::now()
-                                                        .duration_since(std::time::UNIX_EPOCH)
-                                                        .unwrap()
-                                                        .as_millis() as u64);
-                                                
-                                                let tokens = detail.get("tokens");
-                                                let input_tokens = tokens
-                                                    .and_then(|t| t.get("input_tokens"))
-                                                    .and_then(|v| v.as_u64())
-                                                    .map(|v| v as u32);
-                                                let output_tokens = tokens
-                                                    .and_then(|t| t.get("output_tokens"))
-                                                    .and_then(|v| v.as_u64())
-                                                    .map(|v| v as u32);
-                                                
-                                                let failed = detail.get("failed")
-                                                    .and_then(|v| v.as_bool())
-                                                    .unwrap_or(false);
-                                                
-                                                // Detect provider from model name
-                                                let provider = detect_provider_from_model(model_name);
-                                                
-                                                let log = RequestLog {
-                                                    id: format!("req_{}", request_counter),
-                                                    timestamp,
-                                                    provider,
-                                                    model: model_name.clone(),
-                                                    method: "POST".to_string(),
-                                                    path: "/v1/chat/completions".to_string(),
-                                                    status: if failed { 500 } else { 200 },
-                                                    duration_ms: 0, // Not available from usage API
-                                                    tokens_in: input_tokens,
-                                                    tokens_out: output_tokens,
-                                                };
-                                                
-                                                let _ = app_handle2.emit("request-log", log);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    });
+    start_log_watcher(app_handle2, log_path, log_watcher_running, request_counter);
 
     // Update status
     let new_status = {
@@ -889,6 +1058,9 @@ async fn stop_proxy(
             return Ok(status.clone());
         }
     }
+
+    // Stop the log watcher
+    state.log_watcher_running.store(false, Ordering::SeqCst);
 
     // Kill the child process
     {
@@ -3800,6 +3972,8 @@ pub fn run() {
         proxy_process: Mutex::new(None),
         copilot_status: Mutex::new(CopilotStatus::default()),
         copilot_process: Mutex::new(None),
+        log_watcher_running: Arc::new(AtomicBool::new(false)),
+        request_counter: Arc::new(AtomicU64::new(0)),
     };
 
     tauri::Builder::default()
