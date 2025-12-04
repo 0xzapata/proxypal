@@ -1263,9 +1263,9 @@ async fn start_copilot(
     });
     
     // Give it a moment to start, then poll for authentication
-    // copilot-api typically takes 2-4 seconds to fully authenticate
+    // copilot-api typically takes 3-8 seconds to fully authenticate on first run
     let mut authenticated = false;
-    for _ in 0..6 {
+    for _ in 0..16 {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         
         // Check if stdout listener already detected authentication
@@ -1390,22 +1390,39 @@ pub struct CopilotApiDetection {
 async fn detect_copilot_api(app: tauri::AppHandle) -> Result<CopilotApiDetection, String> {
     // Common Node.js installation paths on macOS/Linux
     // GUI apps don't inherit shell PATH, so we need to check common locations
-    let node_paths = if cfg!(target_os = "macos") {
+    // Including version managers: Volta, nvm, fnm, asdf
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"));
+    let home_str = home.to_string_lossy();
+    
+    let node_paths: Vec<String> = if cfg!(target_os = "macos") {
         vec![
-            "/opt/homebrew/bin/node",      // Apple Silicon Homebrew
-            "/usr/local/bin/node",          // Intel Homebrew / manual install
-            "/usr/bin/node",                // System install
-            "/opt/local/bin/node",          // MacPorts
+            // Version managers (most common for developers)
+            format!("{}/.volta/bin/node", home_str),      // Volta
+            format!("{}/.nvm/current/bin/node", home_str), // nvm (symlinked)
+            format!("{}/.fnm/current/bin/node", home_str), // fnm
+            format!("{}/.asdf/shims/node", home_str),      // asdf
+            // System package managers
+            "/opt/homebrew/bin/node".to_string(),      // Apple Silicon Homebrew
+            "/usr/local/bin/node".to_string(),          // Intel Homebrew / manual install
+            "/usr/bin/node".to_string(),                // System install
+            "/opt/local/bin/node".to_string(),          // MacPorts
         ]
     } else if cfg!(target_os = "windows") {
         vec![
-            "node", // Windows typically has proper PATH in GUI apps
+            format!("{}/.volta/bin/node.exe", home_str),  // Volta on Windows
+            "node".to_string(), // Windows typically has proper PATH in GUI apps
         ]
     } else {
         vec![
-            "/usr/bin/node",
-            "/usr/local/bin/node",
-            "/home/linuxbrew/.linuxbrew/bin/node",
+            // Version managers
+            format!("{}/.volta/bin/node", home_str),
+            format!("{}/.nvm/current/bin/node", home_str),
+            format!("{}/.fnm/current/bin/node", home_str),
+            format!("{}/.asdf/shims/node", home_str),
+            // System paths
+            "/usr/bin/node".to_string(),
+            "/usr/local/bin/node".to_string(),
+            "/home/linuxbrew/.linuxbrew/bin/node".to_string(),
         ]
     };
     
@@ -1442,17 +1459,30 @@ async fn detect_copilot_api(app: tauri::AppHandle) -> Result<CopilotApiDetection
     let npm_bin = node_bin.as_ref().map(|n| n.replace("/node", "/npm")).unwrap_or_else(|| "npm".to_string());
     
     // Try to find copilot-api binary directly first
-    let copilot_paths = if cfg!(target_os = "macos") {
+    let copilot_paths: Vec<String> = if cfg!(target_os = "macos") {
         vec![
-            "/opt/homebrew/bin/copilot-api",
-            "/usr/local/bin/copilot-api",
+            // Version managers (most common for developers)
+            format!("{}/.volta/bin/copilot-api", home_str),
+            format!("{}/.nvm/current/bin/copilot-api", home_str),
+            format!("{}/.fnm/current/bin/copilot-api", home_str),
+            format!("{}/.asdf/shims/copilot-api", home_str),
+            // System package managers
+            "/opt/homebrew/bin/copilot-api".to_string(),
+            "/usr/local/bin/copilot-api".to_string(),
         ]
     } else if cfg!(target_os = "windows") {
-        vec!["copilot-api"]
+        vec![
+            format!("{}/.volta/bin/copilot-api.exe", home_str),
+            "copilot-api".to_string(),
+        ]
     } else {
         vec![
-            "/usr/local/bin/copilot-api",
-            "/usr/bin/copilot-api",
+            format!("{}/.volta/bin/copilot-api", home_str),
+            format!("{}/.nvm/current/bin/copilot-api", home_str),
+            format!("{}/.fnm/current/bin/copilot-api", home_str),
+            format!("{}/.asdf/shims/copilot-api", home_str),
+            "/usr/local/bin/copilot-api".to_string(),
+            "/usr/bin/copilot-api".to_string(),
         ]
     };
     
@@ -1526,20 +1556,37 @@ pub struct CopilotApiInstallResult {
 #[tauri::command]
 async fn install_copilot_api(app: tauri::AppHandle) -> Result<CopilotApiInstallResult, String> {
     // Find npm binary - GUI apps don't inherit shell PATH on macOS
-    let npm_paths = if cfg!(target_os = "macos") {
+    // Including version managers: Volta, nvm, fnm, asdf
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"));
+    let home_str = home.to_string_lossy();
+    
+    let npm_paths: Vec<String> = if cfg!(target_os = "macos") {
         vec![
-            "/opt/homebrew/bin/npm",
-            "/usr/local/bin/npm",
-            "/usr/bin/npm",
-            "/opt/local/bin/npm",
+            // Version managers (most common for developers)
+            format!("{}/.volta/bin/npm", home_str),
+            format!("{}/.nvm/current/bin/npm", home_str),
+            format!("{}/.fnm/current/bin/npm", home_str),
+            format!("{}/.asdf/shims/npm", home_str),
+            // System package managers
+            "/opt/homebrew/bin/npm".to_string(),
+            "/usr/local/bin/npm".to_string(),
+            "/usr/bin/npm".to_string(),
+            "/opt/local/bin/npm".to_string(),
         ]
     } else if cfg!(target_os = "windows") {
-        vec!["npm"]
+        vec![
+            format!("{}/.volta/bin/npm.exe", home_str),
+            "npm".to_string(),
+        ]
     } else {
         vec![
-            "/usr/bin/npm",
-            "/usr/local/bin/npm",
-            "/home/linuxbrew/.linuxbrew/bin/npm",
+            format!("{}/.volta/bin/npm", home_str),
+            format!("{}/.nvm/current/bin/npm", home_str),
+            format!("{}/.fnm/current/bin/npm", home_str),
+            format!("{}/.asdf/shims/npm", home_str),
+            "/usr/bin/npm".to_string(),
+            "/usr/local/bin/npm".to_string(),
+            "/home/linuxbrew/.linuxbrew/bin/npm".to_string(),
         ]
     };
     
