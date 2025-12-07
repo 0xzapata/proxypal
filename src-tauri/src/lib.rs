@@ -1593,7 +1593,8 @@ async fn detect_copilot_api(app: tauri::AppHandle) -> Result<CopilotApiDetection
             if n_trimmed == "node" {
                 "npx".to_string()
             } else if n_trimmed.ends_with("/node") {
-                format!("{}/npx", &n_trimmed[..n_trimmed.len() - 5])
+                let node_len = "/node".len();
+                format!("{}/npx", &n_trimmed[..n_trimmed.len() - node_len])
             } else {
                 // Fallback: npx should be alongside node
                 "npx".to_string()
