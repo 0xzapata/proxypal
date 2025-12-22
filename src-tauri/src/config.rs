@@ -180,6 +180,11 @@ pub fn load_config() -> AppConfig {
                 // Migration: Convert deprecated amp_openai_provider to amp_openai_providers array
                 if let Some(old_provider) = config.amp_openai_provider.take() {
                     if config.amp_openai_providers.is_empty() {
+                        eprintln!("[ProxyPal] Migrating config from old provider format to array format...");
+                        eprintln!("[ProxyPal] Old provider: {} with {} models", old_provider.name, old_provider.models.len());
+                        for (i, model) in old_provider.models.iter().enumerate() {
+                            eprintln!("[ProxyPal]   Preserving model {}: {}", i, model.name);
+                        }
                         let provider_with_id = if old_provider.id.is_empty() {
                             AmpOpenAIProvider {
                                 id: generate_uuid(),
@@ -190,6 +195,7 @@ pub fn load_config() -> AppConfig {
                         };
                         config.amp_openai_providers.push(provider_with_id);
                         let _ = save_config_to_file(&config);
+                        eprintln!("[ProxyPal] Config migration complete");
                     }
                 }
                 return config;
@@ -200,8 +206,48 @@ pub fn load_config() -> AppConfig {
 }
 
 /// Save config to file
+/// Uses atomic write (write to temp file then rename) to prevent corruption
 pub fn save_config_to_file(config: &AppConfig) -> Result<(), String> {
     let path = get_config_path();
-    let data = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
-    std::fs::write(path, data).map_err(|e| e.to_string())
+    let config_dir = path.parent().ok_or("Invalid config path")?;
+
+    // Ensure config directory exists
+    if let Err(e) = std::fs::create_dir_all(config_dir) {
+        return Err(format!("Failed to create config directory '{}': {}", config_dir.display(), e));
+    }
+
+    // Serialize config to JSON
+    let data = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+    // Write to temporary file first, then rename for atomic write
+    let temp_path = path.with_extension("tmp");
+
+    // Try writing to temp file with retry for Windows file locking issues
+    let mut last_error = String::new();
+    for attempt in 0..3 {
+        match std::fs::write(&temp_path, &data) {
+            Ok(_) => break,
+            Err(e) => {
+                last_error = e.to_string();
+                if attempt < 2 {
+                    eprintln!("[ProxyPal] Save attempt {} failed, retrying: {}", attempt + 1, e);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    // Verify temp file was written successfully
+    if !temp_path.exists() {
+        return Err(format!("Failed to write config to temp file (attempted 3 times): {}", last_error));
+    }
+
+    // Atomic rename from temp to actual config file
+    std::fs::rename(&temp_path, &path)
+        .map_err(|e| format!("Failed to rename temp file to config: {}", e))?;
+
+    eprintln!("[ProxyPal] Config saved successfully to: {:?}", path);
+
+    Ok(())
 }

@@ -1,5 +1,5 @@
 //! Configuration commands for Tauri IPC.
-
+ 
 use std::fs;
 use tauri::State;
 use crate::config::{AppConfig, save_config_to_file};
@@ -7,18 +7,34 @@ use crate::state::AppState;
 
 #[tauri::command]
 pub fn get_config(state: State<AppState>) -> AppConfig {
-    state.config.lock().unwrap().clone()
+    let config = state.config.lock().unwrap().clone();
+    eprintln!("[ProxyPal Debug] Loading {} custom providers", config.amp_openai_providers.len());
+    for (i, provider) in config.amp_openai_providers.iter().enumerate() {
+        eprintln!("[ProxyPal Debug] Provider {}: {} with {} models", i, provider.name, provider.models.len());
+        for (j, model) in provider.models.iter().enumerate() {
+            eprintln!("[ProxyPal Debug]   Model {}: {}", j, model.name);
+        }
+    }
+    config
 }
 
 #[tauri::command]
 pub fn save_config(state: State<AppState>, config: AppConfig) -> Result<(), String> {
+    // Debug: Log provider models before save
+    eprintln!("[ProxyPal Debug] Saving {} custom providers", config.amp_openai_providers.len());
+    for (i, provider) in config.amp_openai_providers.iter().enumerate() {
+        eprintln!("[ProxyPal Debug] Provider {}: {} with {} models", i, provider.name, provider.models.len());
+        for (j, model) in provider.models.iter().enumerate() {
+            eprintln!("[ProxyPal Debug]   Model {}: {}", j, model.name);
+        }
+    }
+
     let mut current_config = state.config.lock().unwrap();
     *current_config = config.clone();
-    
-    // Also update proxy-config.yaml with routing strategy
-    update_proxy_config_yaml(&config)?;
-    
-    save_config_to_file(&config)
+    save_config_to_file(&config)?;
+
+    eprintln!("[ProxyPal Debug] Config saved successfully");
+    Ok(())
 }
 
 fn update_proxy_config_yaml(app_config: &AppConfig) -> Result<(), String> {
