@@ -64,12 +64,10 @@ impl CloudflareManager {
                 cmd.arg("run");
                 cmd.arg("--token");
                 cmd.arg(&config.tunnel_token);
-                
-                // For quick tunnel (no pre-configured tunnel), use:
-                // cloudflared tunnel --url http://localhost:8317
-                // But with token, we use the configured tunnel
+                cmd.arg("--url");
+                cmd.arg(format!("http://localhost:{}", config.local_port));
 
-                emit_status_clone("connecting", Some(format!("Connecting to Cloudflare...")), None);
+                emit_status_clone("connecting", Some(format!("Connecting to port {}...", config.local_port)), None);
 
                 cmd.stdout(std::process::Stdio::piped())
                    .stderr(std::process::Stdio::piped())
