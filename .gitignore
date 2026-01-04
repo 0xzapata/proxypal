@@ -37,3 +37,6 @@ src-tauri/target/
 src-tauri/logs/
 *.key
 *.pub
+
+# bv (beads viewer) local config and caches
+.bv/
