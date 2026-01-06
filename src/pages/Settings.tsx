@@ -16,7 +16,8 @@ type SettingsTab =
 	| "models"
 	| "advanced"
 	| "ssh"
-	| "cloudflare";
+	| "cloudflare"
+	| "helicone";
 
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
@@ -25,6 +26,8 @@ import type {
 	AmpOpenAIProvider,
 	ClaudeCodeSettings,
 	CloudflareConfig,
+	HeliconeConfig,
+	HeliconeTestResult,
 	ProviderTestResult,
 	SshConfig,
 } from "../lib/tauri";
@@ -49,6 +52,7 @@ import {
 	getCloseToTray,
 	getConfigYaml,
 	getForceModelMappings,
+	getHeliconeConfig,
 	getLogSize,
 	getMaxRetryInterval,
 	getOAuthExcludedModels,
@@ -67,6 +71,7 @@ import {
 	setCloudflareConnection,
 	setConfigYaml,
 	setForceModelMappings,
+	setHeliconeConfig,
 	setLogSize,
 	setMaxRetryInterval,
 	setOAuthExcludedModels,
@@ -77,6 +82,7 @@ import {
 	startProxy,
 	stopProxy,
 	type ThinkingBudgetSettings,
+	testHeliconeConnection,
 	testOpenAIProvider,
 	type UpdateInfo,
 	type UpdateProgress,
@@ -409,6 +415,75 @@ export function SettingsPage() {
 	const [cfToken, setCfToken] = createSignal("");
 	const [cfLocalPort, setCfLocalPort] = createSignal(8317);
 	const [cfAdding, setCfAdding] = createSignal(false);
+
+	// Helicone Observability State
+	const [heliconeEnabled, setHeliconeEnabled] = createSignal(false);
+	const [heliconeApiKey, setHeliconeApiKey] = createSignal("");
+	const [heliconeUseSelfHosted, setHeliconeUseSelfHosted] = createSignal(false);
+	const [heliconeSelfHostedUrl, setHeliconeSelfHostedUrl] = createSignal("");
+	const [savingHelicone, setSavingHelicone] = createSignal(false);
+	const [testingHelicone, setTestingHelicone] = createSignal(false);
+	const [heliconeTestResult, setHeliconeTestResult] =
+		createSignal<HeliconeTestResult | null>(null);
+
+	// Load Helicone config on mount
+	createEffect(async () => {
+		try {
+			const heliconeConfig = await getHeliconeConfig();
+			setHeliconeEnabled(heliconeConfig.enabled);
+			setHeliconeApiKey(heliconeConfig.apiKey);
+			setHeliconeUseSelfHosted(heliconeConfig.useSelfHosted);
+			setHeliconeSelfHostedUrl(heliconeConfig.selfHostedUrl);
+		} catch (error) {
+			console.error("Failed to fetch Helicone config:", error);
+		}
+	});
+
+	// Handle Helicone config save
+	const handleSaveHeliconeConfig = async () => {
+		setSavingHelicone(true);
+		setHeliconeTestResult(null);
+		try {
+			const heliconeConfig: HeliconeConfig = {
+				enabled: heliconeEnabled(),
+				apiKey: heliconeApiKey(),
+				useSelfHosted: heliconeUseSelfHosted(),
+				selfHostedUrl: heliconeSelfHostedUrl(),
+			};
+			await setHeliconeConfig(heliconeConfig);
+			toastStore.success("Helicone configuration saved");
+		} catch (error) {
+			console.error("Failed to save Helicone config:", error);
+			toastStore.error("Failed to save configuration", String(error));
+		} finally {
+			setSavingHelicone(false);
+		}
+	};
+
+	// Handle Helicone connection test
+	const handleTestHeliconeConnection = async () => {
+		setTestingHelicone(true);
+		setHeliconeTestResult(null);
+		try {
+			const result = await testHeliconeConnection();
+			setHeliconeTestResult(result);
+
+			if (result.success) {
+				toastStore.success("Helicone connection successful!");
+			} else {
+				toastStore.error("Connection failed", result.message);
+			}
+		} catch (error) {
+			const errorMsg = String(error);
+			setHeliconeTestResult({
+				success: false,
+				message: errorMsg,
+			});
+			toastStore.error("Connection test failed", errorMsg);
+		} finally {
+			setTestingHelicone(false);
+		}
+	};
 
 	// SSH Handlers
 	const handlePickKeyFile = async () => {
@@ -1344,6 +1419,7 @@ export function SettingsPage() {
 								{ id: "models" as SettingsTab, label: "Models" },
 								{ id: "ssh" as SettingsTab, label: "SSH API" },
 								{ id: "cloudflare" as SettingsTab, label: "Cloudflare" },
+								{ id: "helicone" as SettingsTab, label: "Helicone" },
 								{ id: "advanced" as SettingsTab, label: "Advanced" },
 							]}
 						>
@@ -4310,6 +4386,196 @@ export function SettingsPage() {
 								<strong>Note:</strong> The port routing is configured in the
 								Cloudflare dashboard, not in ProxyPal. The "Local Port" field
 								above is for reference only.
+							</p>
+						</div>
+					</div>
+
+					{/* Helicone Observability Settings */}
+					<div
+						class="space-y-6"
+						classList={{ hidden: activeTab() !== "helicone" }}
+					>
+						<div>
+							<h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+								Helicone Observability
+							</h2>
+							<p class="text-sm text-gray-500 dark:text-gray-400">
+								Enable advanced analytics, cost tracking, caching, and rate limiting
+								for all AI API requests
+							</p>
+						</div>
+
+						<div class="space-y-4 p-4 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
+							<Switch
+								label="Enable Helicone"
+								description={
+									"Route all AI API requests through Helicone gateway for observability"
+								}
+								checked={heliconeEnabled()}
+								onChange={(checked) => setHeliconeEnabled(checked)}
+							/>
+
+							<div class="border-t border-gray-200 dark:border-gray-700" />
+
+							<div class="space-y-1">
+								<label class="text-xs font-medium text-gray-500 uppercase">
+									API Key
+								</label>
+								<input
+									class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+									placeholder="sk-heli..."
+									type="password"
+									value={heliconeApiKey()}
+									onInput={(e) => setHeliconeApiKey(e.currentTarget.value)}
+								/>
+								<p class="text-[10px] text-gray-400">
+									Get your key from{" "}
+									<a
+										href="https://www.helicone.ai/keys"
+										target="_blank"
+										rel="noopener noreferrer"
+										class="text-blue-500 hover:underline"
+									>
+										Helicone Dashboard
+									</a>
+								</p>
+							</div>
+
+							<div class="border-t border-gray-200 dark:border-gray-700" />
+
+							<Switch
+								label="Use Self-Hosted Instance"
+								description="Use your own Helicone deployment instead of cloud"
+								checked={heliconeUseSelfHosted()}
+								onChange={(checked) => setHeliconeUseSelfHosted(checked)}
+							/>
+
+							<Show when={heliconeUseSelfHosted()}>
+								<div class="space-y-1 mt-2">
+									<label class="text-xs font-medium text-gray-500 uppercase">
+										Self-Hosted URL
+									</label>
+									<input
+										class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+										placeholder="https://helicone.yourcompany.com"
+										type="url"
+										value={heliconeSelfHostedUrl()}
+										onInput={(e) =>
+											setHeliconeSelfHostedUrl(e.currentTarget.value)
+										}
+									/>
+									<p class="text-[10px] text-gray-400">
+										Base URL of your self-hosted Helicone deployment
+									</p>
+								</div>
+							</Show>
+
+							{/* Test connection result */}
+							<Show when={heliconeTestResult()}>
+								{(result) => (
+									<div
+										class={`flex items-center gap-2 p-2 rounded-lg text-sm ${
+											result().success
+												? "bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400"
+												: "bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400"
+										}`}
+									>
+										<Show
+											when={result().success}
+											fallback={
+												<svg
+													class="w-5 h-5 flex-shrink-0"
+													fill="none"
+													stroke="currentColor"
+													viewBox="0 0 24 24"
+												>
+													<path
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														stroke-width="2"
+														d="M6 18L18 6M6 6l12 12"
+													/>
+												</svg>
+											}
+										>
+											<svg
+												class="w-5 h-5 flex-shrink-0"
+												fill="none"
+												stroke="currentColor"
+												viewBox="0 0 24 24"
+											>
+												<path
+													stroke-linecap="round"
+													stroke-linejoin="round"
+													stroke-width="2"
+													d="M5 13l4 4L19 7"
+												/>
+											</svg>
+										</Show>
+										<span>{result().message}</span>
+									</div>
+								)}
+							</Show>
+
+							<div class="flex gap-2 pt-2">
+								<Button
+									onClick={handleSaveHeliconeConfig}
+									loading={savingHelicone()}
+									variant="primary"
+								>
+									Save Configuration
+								</Button>
+								<Button
+									onClick={handleTestHeliconeConnection}
+									loading={testingHelicone()}
+									variant="secondary"
+									disabled={
+										!heliconeEnabled() || !heliconeApiKey().trim()
+									}
+								>
+									Test Connection
+								</Button>
+							</div>
+						</div>
+
+						{/* Help Section */}
+						<div class="p-4 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
+							<h3 class="font-medium text-gray-900 dark:text-white mb-2">
+								About Helicone
+							</h3>
+							<p class="text-sm text-gray-600 dark:text-gray-400 mb-3">
+								Helicone is an AI observability platform that provides:
+							</p>
+							<ul class="text-sm text-gray-600 dark:text-gray-400 space-y-2 list-disc list-inside mb-3">
+								<li>
+									<strong>Cost tracking:</strong> Real-time spend dashboard with
+									budget alerts
+								</li>
+								<li>
+									<strong>Request caching:</strong> Reduce costs by caching identical
+									prompts
+								</li>
+								<li>
+									<strong>Rate limiting:</strong> Control costs with per-key limits
+								</li>
+								<li>
+									<strong>Performance monitoring:</strong> Track latency and error
+									rates
+								</li>
+								<li>
+									<strong>User analytics:</strong> See who's using which models
+								</li>
+							</ul>
+							<p class="text-xs text-gray-500 dark:text-gray-400">
+								Learn more at{" "}
+								<a
+									href="https://docs.helicone.ai"
+									target="_blank"
+									rel="noopener noreferrer"
+									class="text-blue-500 hover:underline"
+								>
+									docs.helicone.ai
+								</a>
 							</p>
 						</div>
 					</div>

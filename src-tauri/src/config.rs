@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
     amp::generate_uuid, cloudflare::CloudflareConfig, AmpModelMapping, AmpOpenAIProvider,
-    ClaudeApiKey, CodexApiKey, CopilotConfig, GeminiApiKey, SshConfig, VertexApiKey,
+    ClaudeApiKey, CodexApiKey, CopilotConfig, GeminiApiKey, HeliconeConfig, SshConfig, VertexApiKey,
 };
 
 /// App configuration persisted to config.json
@@ -78,6 +78,8 @@ pub struct AppConfig {
     pub ssh_configs: Vec<SshConfig>,
     #[serde(default)]
     pub cloudflare_configs: Vec<CloudflareConfig>,
+    #[serde(default)]
+    pub helicone: HeliconeConfig,
 }
 
 fn default_management_key() -> String {
@@ -147,6 +149,7 @@ impl Default for AppConfig {
             ws_auth: false,
             ssh_configs: Vec::new(),
             cloudflare_configs: Vec::new(),
+            helicone: HeliconeConfig::default(),
         }
     }
 }

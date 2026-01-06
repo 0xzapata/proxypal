@@ -305,6 +305,7 @@ export interface AppConfig {
 	wsAuth?: boolean; // Require authentication for WebSocket connections
 	sshConfigs?: SshConfig[];
 	cloudflareConfigs?: CloudflareConfig[];
+	helicone?: HeliconeConfig;
 }
 
 export async function getConfig(): Promise<AppConfig> {
@@ -1378,4 +1379,33 @@ export async function onCloudflareStatusChanged(
 			callback(event.payload);
 		},
 	);
+}
+
+// Helicone Observability Integration
+// ============================================================================
+
+export interface HeliconeConfig {
+	enabled: boolean;
+	apiKey: string;
+	useSelfHosted: boolean;
+	selfHostedUrl: string;
+}
+
+export interface HeliconeTestResult {
+	success: boolean;
+	message: string;
+}
+
+export async function getHeliconeConfig(): Promise<HeliconeConfig> {
+	return invoke("get_helicone_config");
+}
+
+export async function setHeliconeConfig(
+	config: HeliconeConfig,
+): Promise<void> {
+	return invoke("set_helicone_config", { config });
+}
+
+export async function testHeliconeConnection(): Promise<HeliconeTestResult> {
+	return invoke("test_helicone_connection");
 }

@@ -1,5 +1,6 @@
 //! Command modules for Tauri IPC.
 
-pub mod config;
-pub mod ssh;
 pub mod cloudflare;
+pub mod config;
+pub mod helicone;
+pub mod ssh;

@@ -958,7 +958,27 @@ payload:
         "# Routing strategy for multiple API keys\nrouting:\n  strategy: \"{}\"\n\n",
         config.routing_strategy
     );
-    
+
+    // Build Helicone observability section if enabled
+    let helicone_section = if config.helicone.enabled {
+        let base_url = config.helicone.get_base_url();
+        format!(
+            r#"# Helicone observability integration
+# All requests will be routed through Helicone gateway for analytics, cost tracking, caching, and rate limiting
+# Helicone base URL: {}
+helicone:
+  api-key: "{}"
+  base-url: "{}"
+
+"#,
+            base_url,
+            config.helicone.api_key,
+            base_url
+        )
+    } else {
+        String::new()
+    };
+
     // Always regenerate config on start because CLIProxyAPI hashes the secret-key in place
     // and we need the plaintext key for Management API access
     let mut proxy_config = format!(
@@ -985,7 +1005,7 @@ remote-management:
   secret-key: "{}"
   disable-control-panel: true
 
-{}{}{}{}{}{}# Amp CLI Integration - enables amp login and management routes
+{}{}{}{}{}{}{}# Amp CLI Integration - enables amp login and management routes
 # See: https://help.router-for.me/agent-client/amp-cli.html
 # Get API key from: https://ampcode.com/settings
 ampcode:
@@ -1017,6 +1037,7 @@ ws-auth: {}
         gemini_api_key_section,
         codex_api_key_section,
         routing_section,
+        helicone_section,
         payload_section,
         amp_api_key_line,
         amp_model_mappings_section,
@@ -7058,6 +7079,10 @@ pub fn run() {
             commands::cloudflare::save_cloudflare_config,
             commands::cloudflare::delete_cloudflare_config,
             commands::cloudflare::set_cloudflare_connection,
+            // Helicone Observability
+            commands::helicone::get_helicone_config,
+            commands::helicone::set_helicone_config,
+            commands::helicone::test_helicone_connection,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
